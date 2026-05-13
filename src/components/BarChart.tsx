@@ -9,7 +9,8 @@ import {
   type LineData,
   type LogicalRange,
   type Time,
-  type UTCTimestamp
+  type UTCTimestamp,
+  type WhitespaceData
 } from 'lightweight-charts';
 import type { ApiBar, ChartDisplayMode, ChartResolvedMode, ChartTimeZoneMode, MarketSession } from '../types';
 
@@ -83,6 +84,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const timeAnchorSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<'Line'>>>([]);
   const displayModeRef = useRef(displayMode);
   const timeZoneModeRef = useRef<ChartTimeZoneMode>('local');
@@ -101,6 +103,10 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       borderColor: bar.borderColor,
       wickColor: bar.wickColor
     }));
+  }, [bars, timeZoneMode]);
+
+  const timeAnchorData = useMemo(() => {
+    return buildTimeAnchorData(bars, timeZoneMode);
   }, [bars, timeZoneMode]);
 
   const lineSegments = useMemo(() => {
@@ -190,9 +196,18 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       borderVisible: true,
       wickVisible: true
     });
+    const timeAnchorSeries = chart.addLineSeries({
+      color: 'rgba(0, 0, 0, 0)',
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      visible: true
+    });
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
+    timeAnchorSeriesRef.current = timeAnchorSeries;
 
     const resizeObserver = new ResizeObserver(() => {
       chart.applyOptions({
@@ -240,6 +255,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      timeAnchorSeriesRef.current = null;
       lineSeriesRef.current = [];
     };
   }, [barsByUnixTime, onResolvedModeChange]);
@@ -247,6 +263,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
   useEffect(() => {
     const chart = chartRef.current;
     candleSeriesRef.current?.setData(candlestickData);
+    timeAnchorSeriesRef.current?.setData(timeAnchorData);
 
     if (chart) {
       for (const series of lineSeriesRef.current) {
@@ -271,7 +288,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       chartRef.current?.timeScale().fitContent();
     }
     updateResolvedModeFromRange(chartRef.current?.timeScale().getVisibleLogicalRange() ?? null);
-  }, [candlestickData, lineSegments]);
+  }, [candlestickData, lineSegments, timeAnchorData]);
 
   function updateResolvedModeFromRange(range: LogicalRange | null) {
     const chart = chartRef.current;
@@ -371,6 +388,42 @@ function formatAxisTime(time: Time, mode: ChartTimeZoneMode) {
   return mode === 'eastern' ? easternAxisFormatter.format(date) : localAxisFormatter.format(date);
 }
 
+function buildTimeAnchorData(bars: ApiBar[], mode: ChartTimeZoneMode): Array<WhitespaceData<UTCTimestamp>> {
+  if (bars.length === 0) {
+    return [];
+  }
+
+  const stepSeconds = inferSmallestGapSeconds(bars);
+  if (!Number.isFinite(stepSeconds) || stepSeconds <= 0) {
+    return bars.map((bar) => ({ time: getChartTime(bar.time, mode) as UTCTimestamp }));
+  }
+
+  const start = getChartTime(bars[0].time, mode);
+  const end = getChartTime(bars[bars.length - 1].time, mode);
+  const anchors: Array<WhitespaceData<UTCTimestamp>> = [];
+  const maxAnchors = 50000;
+
+  for (let time = start; time <= end && anchors.length < maxAnchors; time += stepSeconds) {
+    anchors.push({ time: time as UTCTimestamp });
+  }
+
+  return anchors;
+}
+
+function inferSmallestGapSeconds(bars: ApiBar[]) {
+  let smallestGap = Number.POSITIVE_INFINITY;
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousTime = new Date(bars[index - 1].time).getTime();
+    const currentTime = new Date(bars[index].time).getTime();
+    const gapSeconds = (currentTime - previousTime) / 1000;
+    if (gapSeconds > 0 && gapSeconds < smallestGap) {
+      smallestGap = gapSeconds;
+    }
+  }
+
+  return smallestGap;
+}
+
 function getSessionColor(session: MarketSession) {
   switch (session) {
     case 'overnight':
@@ -400,21 +453,12 @@ function getSessionInstanceKey(bar: ApiBar) {
 }
 
 function inferMaxSegmentGapSeconds(bars: ApiBar[]) {
-  const gaps = [];
-  for (let index = 1; index < bars.length; index += 1) {
-    const previousTime = new Date(bars[index - 1].time).getTime();
-    const currentTime = new Date(bars[index].time).getTime();
-    const gapSeconds = (currentTime - previousTime) / 1000;
-    if (gapSeconds > 0) {
-      gaps.push(gapSeconds);
-    }
-  }
-
-  if (gaps.length === 0) {
+  const smallestGap = inferSmallestGapSeconds(bars);
+  if (!Number.isFinite(smallestGap)) {
     return Number.POSITIVE_INFINITY;
   }
 
-  return Math.min(...gaps) * 3;
+  return smallestGap * 3;
 }
 
 function renderTooltip(bar: ApiBar) {

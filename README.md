@@ -17,7 +17,7 @@ ALPACA_API_KEY_ID=your_key_id
 ALPACA_API_SECRET_KEY=your_secret_key
 ALPACA_DATA_API_BASE_URL=https://data.alpaca.markets/v2
 ALPACA_TRADING_API_BASE_URL=https://paper-api.alpaca.markets/v2
-ALPACA_STOCK_FEED=iex
+ALPACA_STOCK_FEED=sip
 ALPACA_OVERNIGHT_FEED=boats
 PORT=3001
 SQLITE_DB_PATH=data/market-data.sqlite
@@ -39,7 +39,7 @@ SQLITE_DB_PATH=data/market-data.sqlite
 
 ## 数据源说明
 
-常规扩展时段默认请求 Alpaca historical stock bars 的 `iex` feed，夜盘默认请求 `boats` feed。Paper Trading endpoint 和 Market Data endpoint 是两套 API；历史 K 线默认使用 `ALPACA_DATA_API_BASE_URL=https://data.alpaca.markets/v2`。付费订阅可把 `ALPACA_STOCK_FEED` 改成 `sip`。如果账户无对应 feed 权限，页面会显示 Alpaca 返回的 401/403/429 等错误或 warning。
+常规、盘前、盘后时段默认请求 Alpaca historical stock bars 的 `sip` feed，夜盘默认请求 `boats` feed。Paper Trading endpoint 和 Market Data endpoint 是两套 API；历史 K 线默认使用 `ALPACA_DATA_API_BASE_URL=https://data.alpaca.markets/v2`。如果账户无 `sip` 权限，可把 `ALPACA_STOCK_FEED` 改成 `iex`，但 `iex` 在盘前/盘后可能非常稀疏。无对应 feed 权限时，页面会显示 Alpaca 返回的 401/403/429 等错误或 warning。
 
 ## 本地缓存
 
