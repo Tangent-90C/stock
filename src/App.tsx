@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart } from './components/BarChart';
-import type { BarsResponse, Timeframe } from './types';
+import type { BarsResponse, ChartDisplayMode, ChartResolvedMode, Timeframe } from './types';
 
 const timeframes: Timeframe[] = ['1Min', '5Min', '15Min', '30Min', '1Hour'];
+const chartModes: Array<{ value: ChartDisplayMode; label: string }> = [
+  { value: 'auto', label: '自动' },
+  { value: 'candlestick', label: 'K线' },
+  { value: 'line', label: '线图' }
+];
+const resolvedModeLabel: Record<ChartResolvedMode, string> = {
+  candlestick: 'K线',
+  line: '线图'
+};
 
 function toDateInputValue(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -28,6 +37,8 @@ export default function App() {
   const [status, setStatus] = useState('等待加载');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [chartMode, setChartMode] = useState<ChartDisplayMode>('auto');
+  const [resolvedChartMode, setResolvedChartMode] = useState<ChartResolvedMode>('candlestick');
 
   const requestUrl = useMemo(() => {
     const params = new URLSearchParams({
@@ -117,6 +128,15 @@ export default function App() {
             <input type="date" value={end} onChange={(event) => setEnd(event.target.value)} aria-label="结束日期" />
           </label>
 
+          <label>
+            <span>显示</span>
+            <select value={chartMode} onChange={(event) => setChartMode(event.target.value as ChartDisplayMode)} aria-label="图表显示模式">
+              {chartModes.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+
           <button type="submit" disabled={loading}>
             {loading ? '加载中' : '刷新'}
           </button>
@@ -127,6 +147,7 @@ export default function App() {
         <div className="source-status">
           <strong>{data?.symbol || submittedSymbol}</strong>
           <span>{status}</span>
+          <span>显示：{chartMode === 'auto' ? `自动 / ${resolvedModeLabel[resolvedChartMode]}` : resolvedModeLabel[resolvedChartMode]}</span>
           {data ? <span>常规 feed: {data.feeds.regular} / 夜盘 feed: {data.feeds.overnight}</span> : null}
         </div>
         <div className="legend" aria-label="时段颜色图例">
@@ -141,7 +162,12 @@ export default function App() {
       {data?.warnings?.length ? <div className="message warning">{data.warnings.join('；')}</div> : null}
 
       <section className="chart-area">
-        <BarChart bars={data?.bars || []} loading={loading} />
+        <BarChart
+          bars={data?.bars || []}
+          loading={loading}
+          displayMode={chartMode}
+          onResolvedModeChange={setResolvedChartMode}
+        />
       </section>
     </main>
   );

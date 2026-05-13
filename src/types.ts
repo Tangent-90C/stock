@@ -2,6 +2,10 @@ export type Timeframe = '1Min' | '5Min' | '15Min' | '30Min' | '1Hour';
 
 export type MarketSession = 'overnight' | 'premarket' | 'regular' | 'aftermarket';
 
+export type ChartDisplayMode = 'auto' | 'candlestick' | 'line';
+
+export type ChartResolvedMode = 'candlestick' | 'line';
+
 export interface ApiBar {
   time: string;
   open: number;
