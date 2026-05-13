@@ -80,7 +80,7 @@ select {
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(86px, 110px) minmax(86px, 100px) minmax(132px, 1fr) minmax(132px, 1fr) minmax(82px, 96px) minmax(98px, 112px) 92px;
+  grid-template-columns: minmax(82px, 104px) minmax(82px, 98px) minmax(128px, 1fr) minmax(128px, 1fr) minmax(82px, 96px) minmax(98px, 112px) minmax(96px, 112px) 92px;
   gap: 10px;
   align-items: end;
 }
@@ -111,6 +111,34 @@ select {
 .controls select:focus {
   outline: 2px solid rgba(5, 150, 105, 0.22);
   border-color: #059669;
+}
+
+.checkbox-control {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.checkbox-control span {
+  grid-column: 1 / -1;
+}
+
+.checkbox-control input {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin: 0;
+  accent-color: #059669;
+}
+
+.checkbox-control input:disabled {
+  opacity: 0.45;
+}
+
+.checkbox-control em {
+  color: #172033;
+  font-style: normal;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .controls button {
@@ -180,6 +208,13 @@ select {
 
 .legend .aftermarket {
   background: var(--aftermarket);
+}
+
+.legend .skipped-gap {
+  width: 3px;
+  height: 16px;
+  border-radius: 2px;
+  background: rgba(23, 32, 51, 0.32);
 }
 
 .message {

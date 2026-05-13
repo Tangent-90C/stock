@@ -44,6 +44,8 @@ export default function App() {
   const [chartMode, setChartMode] = useState<ChartDisplayMode>('auto');
   const [resolvedChartMode, setResolvedChartMode] = useState<ChartResolvedMode>('candlestick');
   const [timeZoneMode, setTimeZoneMode] = useState<ChartTimeZoneMode>('local');
+  const [skipNonTradingDays, setSkipNonTradingDays] = useState(true);
+  const [showSkippedGapLines, setShowSkippedGapLines] = useState(true);
   const [progress, setProgress] = useState<LoadProgress | null>(null);
 
   const requestUrl = useMemo(() => {
@@ -172,6 +174,29 @@ export default function App() {
             </select>
           </label>
 
+          <label className="checkbox-control">
+            <span>跳过</span>
+            <input
+              type="checkbox"
+              checked={skipNonTradingDays}
+              onChange={(event) => setSkipNonTradingDays(event.target.checked)}
+              aria-label="跳过非交易日"
+            />
+            <em>非交易日</em>
+          </label>
+
+          <label className="checkbox-control">
+            <span>标记</span>
+            <input
+              type="checkbox"
+              checked={showSkippedGapLines}
+              onChange={(event) => setShowSkippedGapLines(event.target.checked)}
+              disabled={!skipNonTradingDays}
+              aria-label="显示跳过非交易日竖线"
+            />
+            <em>竖线</em>
+          </label>
+
           <button type="submit" disabled={loading}>
             {loading ? '加载中' : '刷新'}
           </button>
@@ -184,6 +209,7 @@ export default function App() {
           <span>{status}</span>
           <span>显示：{chartMode === 'auto' ? `自动 / ${resolvedModeLabel[resolvedChartMode]}` : resolvedModeLabel[resolvedChartMode]}</span>
           <span>时区：{timeZoneMode === 'local' ? '本机' : '美股'}</span>
+          <span>{skipNonTradingDays ? '已跳过非交易日空档' : '保留自然时间空档'}</span>
           {data ? <span>常规 feed: {data.feeds.regular} / 夜盘 feed: {data.feeds.overnight}</span> : null}
         </div>
         <div className="legend" aria-label="时段颜色图例">
@@ -191,6 +217,7 @@ export default function App() {
           <span><i className="premarket" />盘前 04:00-09:30 ET</span>
           <span><i className="regular" />盘中 09:30-16:00 ET</span>
           <span><i className="aftermarket" />盘后 16:00-20:00 ET</span>
+          {skipNonTradingDays && showSkippedGapLines ? <span><i className="skipped-gap" />跳过非交易日</span> : null}
         </div>
       </section>
 
@@ -207,6 +234,8 @@ export default function App() {
           loading={loading}
           displayMode={chartMode}
           timeZoneMode={timeZoneMode}
+          skipNonTradingDays={skipNonTradingDays}
+          showSkippedGapLines={showSkippedGapLines}
           onResolvedModeChange={setResolvedChartMode}
         />
       </section>

@@ -4,6 +4,7 @@ import {
   CrosshairMode,
   createChart,
   type CandlestickData,
+  type HistogramData,
   type IChartApi,
   type ISeriesApi,
   type LineData,
@@ -19,6 +20,8 @@ interface BarChartProps {
   loading: boolean;
   displayMode: ChartDisplayMode;
   timeZoneMode: ChartTimeZoneMode;
+  skipNonTradingDays: boolean;
+  showSkippedGapLines: boolean;
   onResolvedModeChange: (mode: ChartResolvedMode) => void;
 }
 
@@ -79,12 +82,13 @@ interface LineSegment {
   data: Array<LineData<UTCTimestamp>>;
 }
 
-export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedModeChange }: BarChartProps) {
+export function BarChart({ bars, loading, displayMode, timeZoneMode, skipNonTradingDays, showSkippedGapLines, onResolvedModeChange }: BarChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const timeAnchorSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const skippedGapSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<'Line'>>>([]);
   const displayModeRef = useRef(displayMode);
   const timeZoneModeRef = useRef<ChartTimeZoneMode>('local');
@@ -106,8 +110,12 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
   }, [bars, timeZoneMode]);
 
   const timeAnchorData = useMemo(() => {
-    return buildTimeAnchorData(bars, timeZoneMode);
-  }, [bars, timeZoneMode]);
+    return buildTimeAnchorData(bars, timeZoneMode, skipNonTradingDays);
+  }, [bars, timeZoneMode, skipNonTradingDays]);
+
+  const skippedGapMarkers = useMemo(() => {
+    return skipNonTradingDays && showSkippedGapLines ? buildSkippedGapMarkers(bars, timeZoneMode) : [];
+  }, [bars, timeZoneMode, skipNonTradingDays, showSkippedGapLines]);
 
   const lineSegments = useMemo(() => {
     const segments: LineSegment[] = [];
@@ -204,10 +212,25 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       crosshairMarkerVisible: false,
       visible: true
     });
+    const skippedGapSeries = chart.addHistogramSeries({
+      color: 'rgba(23, 32, 51, 0.28)',
+      priceFormat: { type: 'volume' },
+      priceLineVisible: false,
+      lastValueVisible: false,
+      base: 0,
+      priceScaleId: ''
+    });
+    skippedGapSeries.priceScale().applyOptions({
+      scaleMargins: {
+        top: 0,
+        bottom: 0
+      }
+    });
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     timeAnchorSeriesRef.current = timeAnchorSeries;
+    skippedGapSeriesRef.current = skippedGapSeries;
 
     const resizeObserver = new ResizeObserver(() => {
       chart.applyOptions({
@@ -256,6 +279,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       chartRef.current = null;
       candleSeriesRef.current = null;
       timeAnchorSeriesRef.current = null;
+      skippedGapSeriesRef.current = null;
       lineSeriesRef.current = [];
     };
   }, [barsByUnixTime, onResolvedModeChange]);
@@ -264,6 +288,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
     const chart = chartRef.current;
     candleSeriesRef.current?.setData(candlestickData);
     timeAnchorSeriesRef.current?.setData(timeAnchorData);
+    skippedGapSeriesRef.current?.setData(skippedGapMarkers);
 
     if (chart) {
       for (const series of lineSeriesRef.current) {
@@ -288,7 +313,7 @@ export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedM
       chartRef.current?.timeScale().fitContent();
     }
     updateResolvedModeFromRange(chartRef.current?.timeScale().getVisibleLogicalRange() ?? null);
-  }, [candlestickData, lineSegments, timeAnchorData]);
+  }, [candlestickData, lineSegments, timeAnchorData, skippedGapMarkers]);
 
   function updateResolvedModeFromRange(range: LogicalRange | null) {
     const chart = chartRef.current;
@@ -388,7 +413,7 @@ function formatAxisTime(time: Time, mode: ChartTimeZoneMode) {
   return mode === 'eastern' ? easternAxisFormatter.format(date) : localAxisFormatter.format(date);
 }
 
-function buildTimeAnchorData(bars: ApiBar[], mode: ChartTimeZoneMode): Array<WhitespaceData<UTCTimestamp>> {
+function buildTimeAnchorData(bars: ApiBar[], mode: ChartTimeZoneMode, skipNonTradingDays: boolean): Array<WhitespaceData<UTCTimestamp>> {
   if (bars.length === 0) {
     return [];
   }
@@ -403,11 +428,55 @@ function buildTimeAnchorData(bars: ApiBar[], mode: ChartTimeZoneMode): Array<Whi
   const anchors: Array<WhitespaceData<UTCTimestamp>> = [];
   const maxAnchors = 50000;
 
+  if (!skipNonTradingDays) {
+    for (let time = start; time <= end && anchors.length < maxAnchors; time += stepSeconds) {
+      anchors.push({ time: time as UTCTimestamp });
+    }
+    return anchors;
+  }
+
+  let segmentStart = getChartTime(bars[0].time, mode);
+  let previousTime = segmentStart;
+  const maxGapSeconds = stepSeconds * 3;
+
+  for (let index = 1; index < bars.length; index += 1) {
+    const currentTime = getChartTime(bars[index].time, mode);
+    if (currentTime - previousTime > maxGapSeconds) {
+      pushAnchorRange(anchors, segmentStart, previousTime, stepSeconds, maxAnchors);
+      segmentStart = currentTime;
+    }
+    previousTime = currentTime;
+  }
+
+  pushAnchorRange(anchors, segmentStart, previousTime, stepSeconds, maxAnchors);
+  return anchors;
+}
+
+function pushAnchorRange(anchors: Array<WhitespaceData<UTCTimestamp>>, start: number, end: number, stepSeconds: number, maxAnchors: number) {
   for (let time = start; time <= end && anchors.length < maxAnchors; time += stepSeconds) {
     anchors.push({ time: time as UTCTimestamp });
   }
+}
 
-  return anchors;
+function buildSkippedGapMarkers(bars: ApiBar[], mode: ChartTimeZoneMode): Array<HistogramData<UTCTimestamp>> {
+  const markers: Array<HistogramData<UTCTimestamp>> = [];
+  const nonTradingGapSeconds = 18 * 60 * 60;
+
+  for (let index = 1; index < bars.length; index += 1) {
+    const previousTime = new Date(bars[index - 1].time).getTime();
+    const currentTime = new Date(bars[index].time).getTime();
+    const gapSeconds = (currentTime - previousTime) / 1000;
+
+    if (gapSeconds >= nonTradingGapSeconds) {
+      markers.push({
+        time: getChartTime(bars[index].time, mode) as UTCTimestamp,
+        value: 1,
+        color: 'rgba(23, 32, 51, 0.32)'
+      });
+    }
+  }
+
+  return markers;
 }
 
 function inferSmallestGapSeconds(bars: ApiBar[]) {
