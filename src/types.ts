@@ -6,6 +6,8 @@ export type ChartDisplayMode = 'auto' | 'candlestick' | 'line';
 
 export type ChartResolvedMode = 'candlestick' | 'line';
 
+export type ChartTimeZoneMode = 'local' | 'eastern';
+
 export interface ApiBar {
   time: string;
   open: number;
@@ -33,5 +35,21 @@ export interface BarsResponse {
     overnight: string;
   };
   warnings: string[];
+  progress?: LoadProgress;
   bars: ApiBar[];
+}
+
+export interface LoadProgress {
+  symbol: string;
+  timeframe: Timeframe;
+  start: string;
+  end: string;
+  totalEstimate: number;
+  cachedEstimate: number;
+  fetchedEstimate: number;
+  fetchedBars: number;
+  finalBars: number;
+  pendingEstimate: number;
+  phase: string;
+  message: string;
 }

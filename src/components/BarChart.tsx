@@ -11,12 +11,13 @@ import {
   type Time,
   type UTCTimestamp
 } from 'lightweight-charts';
-import type { ApiBar, ChartDisplayMode, ChartResolvedMode, MarketSession } from '../types';
+import type { ApiBar, ChartDisplayMode, ChartResolvedMode, ChartTimeZoneMode, MarketSession } from '../types';
 
 interface BarChartProps {
   bars: ApiBar[];
   loading: boolean;
   displayMode: ChartDisplayMode;
+  timeZoneMode: ChartTimeZoneMode;
   onResolvedModeChange: (mode: ChartResolvedMode) => void;
 }
 
@@ -30,6 +31,29 @@ interface TooltipState {
 const etFormatter = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'America/New_York',
   year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+const localTooltipFormatter = new Intl.DateTimeFormat('zh-CN', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+const easternAxisFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'UTC',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+const localAxisFormatter = new Intl.DateTimeFormat('zh-CN', {
   month: '2-digit',
   day: '2-digit',
   hour: '2-digit',
@@ -54,20 +78,21 @@ interface LineSegment {
   data: Array<LineData<UTCTimestamp>>;
 }
 
-export function BarChart({ bars, loading, displayMode, onResolvedModeChange }: BarChartProps) {
+export function BarChart({ bars, loading, displayMode, timeZoneMode, onResolvedModeChange }: BarChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const lineSeriesRef = useRef<Array<ISeriesApi<'Line'>>>([]);
   const displayModeRef = useRef(displayMode);
+  const timeZoneModeRef = useRef<ChartTimeZoneMode>('local');
   const barsLengthRef = useRef(bars.length);
   const resolvedModeRef = useRef<ChartResolvedMode>('candlestick');
   const [tooltip, setTooltip] = useState<TooltipState>({ visible: false, left: 0, top: 0, html: '' });
 
   const candlestickData = useMemo(() => {
     return bars.map<CandlestickData<UTCTimestamp>>((bar) => ({
-      time: Math.floor(new Date(bar.time).getTime() / 1000) as UTCTimestamp,
+      time: getChartTime(bar.time, timeZoneMode) as UTCTimestamp,
       open: bar.open,
       high: bar.high,
       low: bar.low,
@@ -76,7 +101,7 @@ export function BarChart({ bars, loading, displayMode, onResolvedModeChange }: B
       borderColor: bar.borderColor,
       wickColor: bar.wickColor
     }));
-  }, [bars]);
+  }, [bars, timeZoneMode]);
 
   const lineSegments = useMemo(() => {
     const segments: LineSegment[] = [];
@@ -85,7 +110,7 @@ export function BarChart({ bars, loading, displayMode, onResolvedModeChange }: B
     const maxGapSeconds = inferMaxSegmentGapSeconds(bars);
 
     for (const bar of bars) {
-      const time = Math.floor(new Date(bar.time).getTime() / 1000) as UTCTimestamp;
+      const time = getChartTime(bar.time, timeZoneMode) as UTCTimestamp;
       const sessionKey = getSessionInstanceKey(bar);
       const hasLargeGap = previousTime !== null && time - previousTime > maxGapSeconds;
 
@@ -103,20 +128,25 @@ export function BarChart({ bars, loading, displayMode, onResolvedModeChange }: B
     }
 
     return segments.filter((segment) => segment.data.length > 1);
-  }, [bars]);
+  }, [bars, timeZoneMode]);
 
   const barsByUnixTime = useMemo(() => {
     const map = new Map<number, ApiBar>();
     for (const bar of bars) {
-      map.set(Math.floor(new Date(bar.time).getTime() / 1000), bar);
+      map.set(getChartTime(bar.time, timeZoneMode), bar);
     }
     return map;
-  }, [bars]);
+  }, [bars, timeZoneMode]);
 
   useEffect(() => {
     displayModeRef.current = displayMode;
     updateResolvedModeFromRange(chartRef.current?.timeScale().getVisibleLogicalRange() ?? null);
   }, [displayMode]);
+
+  useEffect(() => {
+    timeZoneModeRef.current = timeZoneMode;
+    chartRef.current?.applyOptions({ localization: { timeFormatter: (time: Time) => formatAxisTime(time, timeZoneMode) } });
+  }, [timeZoneMode]);
 
   useEffect(() => {
     barsLengthRef.current = bars.length;
@@ -148,6 +178,9 @@ export function BarChart({ bars, loading, displayMode, onResolvedModeChange }: B
         borderColor: '#d8dee8',
         timeVisible: true,
         secondsVisible: false
+      },
+      localization: {
+        timeFormatter: (time: Time) => formatAxisTime(time, timeZoneModeRef.current)
       }
     });
 
@@ -304,6 +337,40 @@ function normalizeCrosshairTime(time: Time) {
   );
 }
 
+function getChartTime(isoTime: string, mode: ChartTimeZoneMode) {
+  const date = new Date(isoTime);
+  if (mode === 'local') {
+    return Math.floor(date.getTime() / 1000);
+  }
+
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value || '00';
+  return Math.floor(
+    Date.UTC(
+      Number(value('year')),
+      Number(value('month')) - 1,
+      Number(value('day')),
+      Number(value('hour')),
+      Number(value('minute')),
+      Number(value('second'))
+    ) / 1000
+  );
+}
+
+function formatAxisTime(time: Time, mode: ChartTimeZoneMode) {
+  const date = new Date(normalizeCrosshairTime(time) * 1000);
+  return mode === 'eastern' ? easternAxisFormatter.format(date) : localAxisFormatter.format(date);
+}
+
 function getSessionColor(session: MarketSession) {
   switch (session) {
     case 'overnight':
@@ -361,7 +428,7 @@ function renderTooltip(bar: ApiBar) {
   ];
 
   return `
-    <div class="tooltip-title">${etFormatter.format(new Date(bar.time))} ET</div>
+    <div class="tooltip-title">${etFormatter.format(new Date(bar.time))} ET / 本机 ${localTooltipFormatter.format(new Date(bar.time))}</div>
     ${rows.map(([label, value]) => `<div class="tooltip-row"><span>${label}</span><strong>${value}</strong></div>`).join('')}
   `;
 }

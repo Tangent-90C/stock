@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BarChart } from './components/BarChart';
-import type { BarsResponse, ChartDisplayMode, ChartResolvedMode, Timeframe } from './types';
+import type { BarsResponse, ChartDisplayMode, ChartResolvedMode, ChartTimeZoneMode, LoadProgress, Timeframe } from './types';
 
 const timeframes: Timeframe[] = ['1Min', '5Min', '15Min', '30Min', '1Hour'];
 const chartModes: Array<{ value: ChartDisplayMode; label: string }> = [
@@ -12,6 +12,10 @@ const resolvedModeLabel: Record<ChartResolvedMode, string> = {
   candlestick: 'K线',
   line: '线图'
 };
+const timeZoneModes: Array<{ value: ChartTimeZoneMode; label: string }> = [
+  { value: 'local', label: '本机时区' },
+  { value: 'eastern', label: '美股时区' }
+];
 
 function toDateInputValue(date: Date) {
   return date.toISOString().slice(0, 10);
@@ -39,6 +43,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [chartMode, setChartMode] = useState<ChartDisplayMode>('auto');
   const [resolvedChartMode, setResolvedChartMode] = useState<ChartResolvedMode>('candlestick');
+  const [timeZoneMode, setTimeZoneMode] = useState<ChartTimeZoneMode>('local');
+  const [progress, setProgress] = useState<LoadProgress | null>(null);
 
   const requestUrl = useMemo(() => {
     const params = new URLSearchParams({
@@ -50,35 +56,55 @@ export default function App() {
     return `/api/bars?${params.toString()}`;
   }, [submittedSymbol, timeframe, start, end]);
 
-  const loadBars = useCallback(async (signal?: AbortSignal) => {
+  const loadBars = useCallback(() => {
     setLoading(true);
     setError('');
-    setStatus('正在请求 Alpaca');
+    setStatus('正在检查缓存');
 
-    try {
-      const response = await fetch(requestUrl, { signal });
-      const payload = await response.json().catch(() => ({}));
+    const eventSource = new EventSource(requestUrl.replace('/api/bars?', '/api/bars/stream?'));
 
-      if (!response.ok) {
-        throw new Error(payload?.message || `请求失败：${response.status}`);
-      }
+    eventSource.addEventListener('progress', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as LoadProgress;
+      setProgress(payload);
+      setStatus(payload.message || '正在加载 K 线');
+    });
 
+    eventSource.addEventListener('complete', (event) => {
+      const payload = JSON.parse((event as MessageEvent).data) as BarsResponse;
       setData(payload);
+      setProgress(payload.progress || null);
       setStatus(payload.bars?.length ? `已加载 ${payload.bars.length.toLocaleString()} 根 K 线` : '没有返回 K 线数据');
-    } catch (loadError) {
-      if (loadError instanceof DOMException && loadError.name === 'AbortError') return;
-      setData(null);
-      setError(loadError instanceof Error ? loadError.message : '加载数据失败');
-      setStatus('加载失败');
-    } finally {
       setLoading(false);
-    }
+      eventSource.close();
+    });
+
+    eventSource.addEventListener('server-error', (event) => {
+      const messageEvent = event as MessageEvent;
+      let message = '加载数据失败';
+      if (messageEvent.data) {
+        const payload = JSON.parse(messageEvent.data) as { message?: string };
+        message = payload.message || message;
+      }
+      setData(null);
+      setError(message);
+      setStatus('加载失败');
+      setLoading(false);
+      eventSource.close();
+    });
+
+    eventSource.onerror = () => {
+      setError((current) => current || '加载数据连接中断。');
+      setStatus('加载失败');
+      setLoading(false);
+      eventSource.close();
+    };
+
+    return eventSource;
   }, [requestUrl]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    loadBars(controller.signal);
-    return () => controller.abort();
+    const eventSource = loadBars();
+    return () => eventSource.close();
   }, [loadBars]);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -137,6 +163,15 @@ export default function App() {
             </select>
           </label>
 
+          <label>
+            <span>时区</span>
+            <select value={timeZoneMode} onChange={(event) => setTimeZoneMode(event.target.value as ChartTimeZoneMode)} aria-label="时间轴时区">
+              {timeZoneModes.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+
           <button type="submit" disabled={loading}>
             {loading ? '加载中' : '刷新'}
           </button>
@@ -148,6 +183,7 @@ export default function App() {
           <strong>{data?.symbol || submittedSymbol}</strong>
           <span>{status}</span>
           <span>显示：{chartMode === 'auto' ? `自动 / ${resolvedModeLabel[resolvedChartMode]}` : resolvedModeLabel[resolvedChartMode]}</span>
+          <span>时区：{timeZoneMode === 'local' ? '本机' : '美股'}</span>
           {data ? <span>常规 feed: {data.feeds.regular} / 夜盘 feed: {data.feeds.overnight}</span> : null}
         </div>
         <div className="legend" aria-label="时段颜色图例">
@@ -160,15 +196,44 @@ export default function App() {
 
       {error ? <div className="message error">{error}</div> : null}
       {data?.warnings?.length ? <div className="message warning">{data.warnings.join('；')}</div> : null}
+      {resolvedChartMode === 'line' ? (
+        <div className="message info">线图在盘前、盘后、夜盘出现断开，通常表示该时段没有连续成交 K 线；系统不会跨缺口硬连价格。</div>
+      ) : null}
+      {progress ? <ProgressPanel progress={progress} /> : null}
 
       <section className="chart-area">
         <BarChart
           bars={data?.bars || []}
           loading={loading}
           displayMode={chartMode}
+          timeZoneMode={timeZoneMode}
           onResolvedModeChange={setResolvedChartMode}
         />
       </section>
     </main>
   );
+}
+
+function ProgressPanel({ progress }: { progress: LoadProgress }) {
+  const completedEstimate = Math.min(progress.totalEstimate, progress.cachedEstimate + progress.fetchedEstimate);
+  const percent = progress.totalEstimate > 0 ? Math.min(100, Math.round((completedEstimate / progress.totalEstimate) * 100)) : 0;
+
+  return (
+    <section className="progress-panel" aria-live="polite">
+      <div className="progress-text">
+        需覆盖约 {formatCount(progress.totalEstimate)} 个时间槽｜
+        已缓存覆盖约 {formatCount(progress.cachedEstimate)} 个｜
+        已请求覆盖约 {formatCount(progress.fetchedEstimate)} 个｜
+        实际获取 {formatCount(progress.fetchedBars)} 根｜
+        最终显示 {formatCount(progress.finalBars)} 根
+      </div>
+      <div className="progress-track" aria-label={`加载进度 ${percent}%`}>
+        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      </div>
+    </section>
+  );
+}
+
+function formatCount(value: number) {
+  return Math.max(0, Math.round(value)).toLocaleString();
 }

@@ -80,7 +80,7 @@ select {
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(96px, 120px) minmax(92px, 106px) minmax(138px, 1fr) minmax(138px, 1fr) minmax(88px, 106px) 92px;
+  grid-template-columns: minmax(86px, 110px) minmax(86px, 100px) minmax(132px, 1fr) minmax(132px, 1fr) minmax(82px, 96px) minmax(98px, 112px) 92px;
   gap: 10px;
   align-items: end;
 }
@@ -198,6 +198,43 @@ select {
   color: #92400e;
   background: #fffbeb;
   border: 1px solid #fde68a;
+}
+
+.message.info {
+  color: #175cd3;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.progress-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #dce3ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 8px 22px rgba(23, 32, 51, 0.05);
+}
+
+.progress-text {
+  color: #475467;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.progress-track {
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8edf5;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #059669;
+  transition: width 180ms ease;
 }
 
 .chart-area {

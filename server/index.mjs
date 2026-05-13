@@ -47,48 +47,135 @@ app.get('/api/status', (_req, res) => {
 });
 
 app.get('/api/bars', async (req, res) => {
-  const symbol = String(req.query.symbol || 'QCOM').trim().toUpperCase();
-  const timeframe = String(req.query.timeframe || '5Min');
-  const { start, end } = getDateRange(req.query.start, req.query.end);
+  try {
+    const request = parseBarsRequest(req.query);
+    const result = await loadBars(request);
+    res.json(result);
+  } catch (error) {
+    sendBarsError(res, error);
+  }
+});
+
+app.get('/api/bars/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  let closed = false;
+  req.on('close', () => {
+    closed = true;
+  });
+
+  const sendEvent = (event, data) => {
+    if (closed || res.destroyed) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const request = parseBarsRequest(req.query);
+    const result = await loadBars(request, (progress) => sendEvent('progress', progress));
+    sendEvent('complete', result);
+  } catch (error) {
+    sendEvent('server-error', normalizeBarsError(error));
+  } finally {
+    res.end();
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Alpaca proxy listening on http://127.0.0.1:${port}`);
+});
+
+function parseBarsRequest(query) {
+  const symbol = String(query.symbol || 'QCOM').trim().toUpperCase();
+  const timeframe = String(query.timeframe || '5Min');
+  const { start, end } = getDateRange(query.start, query.end);
 
   if (!/^[A-Z][A-Z0-9.-]{0,9}$/.test(symbol)) {
-    res.status(400).json({ message: '股票代码格式不正确。' });
-    return;
+    throw createHttpError(400, '股票代码格式不正确。');
   }
 
   if (!supportedTimeframes.has(timeframe)) {
-    res.status(400).json({ message: '不支持的 K 线周期。' });
-    return;
+    throw createHttpError(400, '不支持的 K 线周期。');
   }
 
   if (!process.env.ALPACA_API_KEY_ID || !process.env.ALPACA_API_SECRET_KEY) {
-    res.status(503).json({
-      message: '缺少 Alpaca API Key。请复制 .env.example 为 .env，并填写 ALPACA_API_KEY_ID 和 ALPACA_API_SECRET_KEY。'
-    });
-    return;
+    throw createHttpError(503, '缺少 Alpaca API Key。请复制 .env.example 为 .env，并填写 ALPACA_API_KEY_ID 和 ALPACA_API_SECRET_KEY。');
   }
+
+  return { symbol, timeframe, start, end };
+}
+
+async function loadBars({ symbol, timeframe, start, end }, onProgress = () => {}) {
+  const progress = {
+    symbol,
+    timeframe,
+    start,
+    end,
+    totalEstimate: 0,
+    cachedEstimate: 0,
+    fetchedEstimate: 0,
+    fetchedBars: 0,
+    finalBars: 0,
+    pendingEstimate: 0,
+    phase: 'initializing',
+    message: '正在检查本地缓存'
+  };
+
+  const emitProgress = (patch = {}) => {
+    Object.assign(progress, patch);
+    progress.pendingEstimate = Math.max(0, progress.totalEstimate - progress.cachedEstimate - progress.fetchedEstimate);
+    onProgress({ ...progress });
+  };
 
   const regularFeed = normalizeFeed(process.env.ALPACA_STOCK_FEED, 'iex');
   const overnightFeed = normalizeFeed(process.env.ALPACA_OVERNIGHT_FEED, 'boats');
   const feeds = [...new Set([regularFeed, overnightFeed])];
+  progress.totalEstimate = estimateSlots({ start, end, timeframe }) * feeds.length;
   const coverage = feeds.map((feed) => ({
     feed,
     ranges: getMissingRanges({ symbol, timeframe, feed, start, end })
   }));
-  const results = await Promise.all(
-    coverage.map(async ({ feed, ranges }) => {
+  progress.cachedEstimate = coverage.reduce(
+    (total, item) => total + Math.max(0, estimateSlots({ start, end, timeframe }) - estimateRanges(item.ranges, timeframe)),
+    0
+  );
+  emitProgress({ phase: 'cache', message: '已完成本地缓存检查' });
+
+  const results = [];
+  for (const { feed, ranges } of coverage) {
       if (ranges.length === 0) {
-        return { feed, bars: [], fetchedRanges: [], fromCacheOnly: true, error: null };
+      results.push({ feed, bars: [], fetchedRanges: [], fromCacheOnly: true, error: null });
+      emitProgress({ phase: 'cache-hit', message: `${feed} 已全部命中缓存` });
+      continue;
       }
 
-      const rangeResults = await Promise.all(
-        ranges.map((range) => fetchBarsFeed({ symbol, timeframe, start: range.start, end: range.end, feed }))
-      );
+    const rangeResults = [];
+    for (const range of ranges) {
+      emitProgress({ phase: 'fetching', message: `正在获取 ${feed} ${range.start} - ${range.end}` });
+      const rangeResult = await fetchBarsFeed({ symbol, timeframe, start: range.start, end: range.end, feed });
+      rangeResults.push(rangeResult);
+      if (!rangeResult.error) {
+        const fetchedBars = rangeResult.bars.length;
+        progress.fetchedBars += fetchedBars;
+        progress.fetchedEstimate += estimateSlots({ start: range.start, end: range.end, timeframe });
+        emitProgress({
+          phase: 'fetching',
+          fetchedBars: progress.fetchedBars,
+          fetchedEstimate: progress.fetchedEstimate,
+          message: `已获取 ${feed} ${fetchedBars.toLocaleString('en-US')} 根`
+        });
+      }
+    }
+
       const errorResult = rangeResults.find((result) => result.error);
       const bars = rangeResults.flatMap((result) => result.bars);
 
       if (bars.length > 0) {
         upsertBars({ symbol, timeframe, bars });
+      emitProgress({ phase: 'saving', message: `${feed} 已写入本地缓存` });
       }
 
       if (!errorResult) {
@@ -97,31 +184,34 @@ app.get('/api/bars', async (req, res) => {
         }
       }
 
-      return {
+    results.push({
         feed,
         bars,
         fetchedRanges: ranges,
         fromCacheOnly: false,
         error: errorResult?.error || null
-      };
-    })
-  );
+    });
+  }
+
   const successes = results.filter((result) => !result.error);
   const failures = results.filter((result) => result.error);
   const cachedBars = feeds.flatMap((feed) => getCachedBars({ symbol, timeframe, feed, start, end }));
 
   if (successes.length === 0 && cachedBars.length === 0) {
     const firstError = failures[0]?.error;
-    res.status(firstError?.status || 502).json({
-      message: firstError?.message || 'Alpaca 数据请求失败。',
+    throw createHttpError(firstError?.status || 502, firstError?.message || 'Alpaca 数据请求失败。', {
       details: failures.map((failure) => ({ feed: failure.feed, ...failure.error }))
     });
-    return;
   }
 
   const bars = mergeBars(cachedBars, overnightFeed);
+  emitProgress({
+    phase: 'complete',
+    finalBars: bars.length,
+    message: `已加载 ${bars.length.toLocaleString('en-US')} 根 K 线`
+  });
 
-  res.json({
+  return {
     symbol,
     timeframe,
     start,
@@ -134,13 +224,10 @@ app.get('/api/bars', async (req, res) => {
       fetchedRanges: results.flatMap((result) => result.fetchedRanges.map((range) => ({ feed: result.feed, ...range }))),
       hitOnly: results.every((result) => result.fromCacheOnly)
     },
+    progress: { ...progress, finalBars: bars.length, phase: 'complete' },
     bars
-  });
-});
-
-app.listen(port, () => {
-  console.log(`Alpaca proxy listening on http://127.0.0.1:${port}`);
-});
+  };
+}
 
 function getDateRange(startQuery, endQuery) {
   const end = parseDateQuery(endQuery) || new Date();
@@ -149,6 +236,41 @@ function getDateRange(startQuery, endQuery) {
     start: start.toISOString(),
     end: end.toISOString()
   };
+}
+
+function estimateSlots({ start, end, timeframe }) {
+  const startTime = new Date(start).getTime();
+  const endTime = new Date(end).getTime();
+  if (Number.isNaN(startTime) || Number.isNaN(endTime) || endTime < startTime) {
+    return 0;
+  }
+
+  const stepMs = timeframeMinutes[timeframe] * 60 * 1000;
+  return Math.floor((endTime - startTime) / stepMs) + 1;
+}
+
+function estimateRanges(ranges, timeframe) {
+  return ranges.reduce((total, range) => total + estimateSlots({ start: range.start, end: range.end, timeframe }), 0);
+}
+
+function createHttpError(status, message, extra = {}) {
+  const error = new Error(message);
+  error.status = status;
+  Object.assign(error, extra);
+  return error;
+}
+
+function normalizeBarsError(error) {
+  return {
+    status: error?.status || 500,
+    message: error instanceof Error ? error.message : '请求 K 线数据失败。',
+    details: error?.details
+  };
+}
+
+function sendBarsError(res, error) {
+  const payload = normalizeBarsError(error);
+  res.status(payload.status).json(payload);
 }
 
 function initDatabase(filePath) {
